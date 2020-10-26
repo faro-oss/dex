@@ -29,14 +29,14 @@ import (
 	"github.com/dexidp/dex/storage"
 )
 
-func commandServe() *cobra.Command {
+func commandCheck() *cobra.Command {
 	return &cobra.Command{
-		Use:     "serve [ config file ]",
-		Short:   "Connect to the storage and begin serving requests.",
+		Use:     "check [ config file ]",
+		Short:   "Check the config file for errors and return",
 		Long:    ``,
-		Example: "dex serve config.yaml",
+		Example: "dex check config.yaml",
 		Run: func(cmd *cobra.Command, args []string) {
-			if err := serve(cmd, args); err != nil {
+			if err := serve(cmd, args, true); err != nil {
 				fmt.Fprintln(os.Stderr, err)
 				os.Exit(2)
 			}
@@ -44,7 +44,23 @@ func commandServe() *cobra.Command {
 	}
 }
 
-func serve(cmd *cobra.Command, args []string) error {
+
+func commandServe() *cobra.Command {
+	return &cobra.Command{
+		Use:     "serve [ config file ]",
+		Short:   "Connect to the storage and begin serving requests.",
+		Long:    ``,
+		Example: "dex serve config.yaml",
+		Run: func(cmd *cobra.Command, args []string) {
+			if err := serve(cmd, args, false); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(2)
+			}
+		},
+	}
+}
+
+func serve(cmd *cobra.Command, args []string, check bool) error {
 	switch len(args) {
 	default:
 		return errors.New("surplus arguments")
@@ -53,7 +69,6 @@ func serve(cmd *cobra.Command, args []string) error {
 		return errors.New("no arguments provided")
 	case 1:
 	}
-
 	configFile := args[0]
 	configData, err := ioutil.ReadFile(configFile)
 	if err != nil {
@@ -276,6 +291,10 @@ func serve(cmd *cobra.Command, args []string) error {
 		}
 		logger.Infof("config device requests valid for: %v", deviceRequests)
 		serverConfig.DeviceRequestsValidFor = deviceRequests
+	}
+	if check {
+		logger.Infof("config check passed")
+		return nil
 	}
 	serv, err := server.NewServer(context.Background(), serverConfig)
 	if err != nil {
