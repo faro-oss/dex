@@ -81,6 +81,11 @@ func mustBeErrAlreadyExists(t *testing.T, kind string, err error) {
 }
 
 func testAuthRequestCRUD(t *testing.T, s storage.Storage) {
+	codeChallenge := storage.PKCE{
+		CodeChallenge:       "code_challenge_test",
+		CodeChallengeMethod: "plain",
+	}
+
 	a1 := storage.AuthRequest{
 		ID:                  storage.NewID(),
 		ClientID:            "client1",
@@ -101,6 +106,7 @@ func testAuthRequestCRUD(t *testing.T, s storage.Storage) {
 			EmailVerified: true,
 			Groups:        []string{"a", "b"},
 		},
+		PKCE: codeChallenge,
 	}
 
 	identity := storage.Claims{Email: "foobar"}
@@ -153,6 +159,10 @@ func testAuthRequestCRUD(t *testing.T, s storage.Storage) {
 	}
 	if !reflect.DeepEqual(got.Claims, identity) {
 		t.Fatalf("update failed, wanted identity=%#v got %#v", identity, got.Claims)
+	}
+
+	if !reflect.DeepEqual(got.PKCE, codeChallenge) {
+		t.Fatalf("storage does not support PKCE, wanted challenge=%#v got %#v", codeChallenge, got.PKCE)
 	}
 
 	if err := s.DeleteAuthRequest(a1.ID); err != nil {
@@ -763,10 +773,8 @@ func testGC(t *testing.T, s storage.Storage) {
 		result, err := s.GarbageCollect(expiry.Add(-time.Hour).In(tz))
 		if err != nil {
 			t.Errorf("garbage collection failed: %v", err)
-		} else {
-			if result.AuthCodes != 0 || result.AuthRequests != 0 {
-				t.Errorf("expected no garbage collection results, got %#v", result)
-			}
+		} else if result.AuthCodes != 0 || result.AuthRequests != 0 {
+			t.Errorf("expected no garbage collection results, got %#v", result)
 		}
 		if _, err := s.GetAuthCode(c.ID); err != nil {
 			t.Errorf("expected to be able to get auth code after GC: %v", err)
@@ -815,10 +823,8 @@ func testGC(t *testing.T, s storage.Storage) {
 		result, err := s.GarbageCollect(expiry.Add(-time.Hour).In(tz))
 		if err != nil {
 			t.Errorf("garbage collection failed: %v", err)
-		} else {
-			if result.AuthCodes != 0 || result.AuthRequests != 0 {
-				t.Errorf("expected no garbage collection results, got %#v", result)
-			}
+		} else if result.AuthCodes != 0 || result.AuthRequests != 0 {
+			t.Errorf("expected no garbage collection results, got %#v", result)
 		}
 		if _, err := s.GetAuthRequest(a.ID); err != nil {
 			t.Errorf("expected to be able to get auth request after GC: %v", err)
@@ -859,10 +865,8 @@ func testGC(t *testing.T, s storage.Storage) {
 		result, err := s.GarbageCollect(expiry.Add(-time.Hour).In(tz))
 		if err != nil {
 			t.Errorf("garbage collection failed: %v", err)
-		} else {
-			if result.DeviceRequests != 0 {
-				t.Errorf("expected no device garbage collection results, got %#v", result)
-			}
+		} else if result.DeviceRequests != 0 {
+			t.Errorf("expected no device garbage collection results, got %#v", result)
 		}
 		if _, err := s.GetDeviceRequest(d.UserCode); err != nil {
 			t.Errorf("expected to be able to get auth request after GC: %v", err)
@@ -897,10 +901,8 @@ func testGC(t *testing.T, s storage.Storage) {
 		result, err := s.GarbageCollect(expiry.Add(-time.Hour).In(tz))
 		if err != nil {
 			t.Errorf("garbage collection failed: %v", err)
-		} else {
-			if result.DeviceTokens != 0 {
-				t.Errorf("expected no device token garbage collection results, got %#v", result)
-			}
+		} else if result.DeviceTokens != 0 {
+			t.Errorf("expected no device token garbage collection results, got %#v", result)
 		}
 		if _, err := s.GetDeviceToken(dt.DeviceCode); err != nil {
 			t.Errorf("expected to be able to get device token after GC: %v", err)
@@ -987,12 +989,12 @@ func testDeviceRequestCRUD(t *testing.T, s storage.Storage) {
 	err = s.CreateDeviceRequest(d1)
 	mustBeErrAlreadyExists(t, "device request", err)
 
-	//No manual deletes for device requests, will be handled by garbage collection routines
-	//see testGC
+	// No manual deletes for device requests, will be handled by garbage collection routines
+	// see testGC
 }
 
 func testDeviceTokenCRUD(t *testing.T, s storage.Storage) {
-	//Create a Token
+	// Create a Token
 	d1 := storage.DeviceToken{
 		DeviceCode:          storage.NewID(),
 		Status:              "pending",
@@ -1010,7 +1012,7 @@ func testDeviceTokenCRUD(t *testing.T, s storage.Storage) {
 	err := s.CreateDeviceToken(d1)
 	mustBeErrAlreadyExists(t, "device token", err)
 
-	//Update the device token, simulate a redemption
+	// Update the device token, simulate a redemption
 	if err := s.UpdateDeviceToken(d1.DeviceCode, func(old storage.DeviceToken) (storage.DeviceToken, error) {
 		old.Token = "token data"
 		old.Status = "complete"
@@ -1019,13 +1021,13 @@ func testDeviceTokenCRUD(t *testing.T, s storage.Storage) {
 		t.Fatalf("failed to update device token: %v", err)
 	}
 
-	//Retrieve the device token
+	// Retrieve the device token
 	got, err := s.GetDeviceToken(d1.DeviceCode)
 	if err != nil {
 		t.Fatalf("failed to get device token: %v", err)
 	}
 
-	//Validate expected result set
+	// Validate expected result set
 	if got.Status != "complete" {
 		t.Fatalf("update failed, wanted token status=%v got %v", "complete", got.Status)
 	}

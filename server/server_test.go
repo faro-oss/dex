@@ -177,7 +177,7 @@ func TestDiscovery(t *testing.T) {
 	defer cancel()
 
 	httpServer, _ := newTestServer(ctx, t, func(c *Config) {
-		c.Issuer = c.Issuer + "/non-root-path"
+		c.Issuer += "/non-root-path"
 	})
 	defer httpServer.Close()
 
@@ -216,6 +216,29 @@ type test struct {
 	scopes []string
 	// handleToken provides the OAuth2 token response for the integration test.
 	handleToken func(context.Context, *oidc.Provider, *oauth2.Config, *oauth2.Token, *mock.Callback) error
+
+	// extra parameters to pass when requesting auth_code
+	authCodeOptions []oauth2.AuthCodeOption
+
+	// extra parameters to pass when retrieving id token
+	retrieveTokenOptions []oauth2.AuthCodeOption
+
+	// define an error response, when the test expects an error on the token endpoint
+	tokenError ErrorResponse
+}
+
+// Defines an expected error by HTTP Status Code and
+// the OAuth2 error int the response json
+type ErrorResponse struct {
+	Error      string
+	StatusCode int
+}
+
+// https://tools.ietf.org/html/rfc6749#section-5.2
+type OAuth2ErrorResponse struct {
+	Error            string `json:"error"`
+	ErrorDescription string `json:"error_description"`
+	ErrorURI         string `json:"error_uri"`
 }
 
 func makeOAuth2Tests(clientID string, clientSecret string, now func() time.Time) oauth2Tests {
@@ -228,6 +251,17 @@ func makeOAuth2Tests(clientID string, clientSecret string, now func() time.Time)
 	idTokensValidFor := time.Second * 30
 
 	oidcConfig := &oidc.Config{SkipClientIDCheck: true}
+
+	basicIDTokenVerify := func(ctx context.Context, p *oidc.Provider, config *oauth2.Config, token *oauth2.Token, conn *mock.Callback) error {
+		idToken, ok := token.Extra("id_token").(string)
+		if !ok {
+			return fmt.Errorf("no id token found")
+		}
+		if _, err := p.Verifier(oidcConfig).Verify(ctx, idToken); err != nil {
+			return fmt.Errorf("failed to verify id token: %v", err)
+		}
+		return nil
+	}
 
 	return oauth2Tests{
 		clientID: clientID,
@@ -469,6 +503,110 @@ func makeOAuth2Tests(clientID string, clientSecret string, now func() time.Time)
 					return nil
 				},
 			},
+			{
+				// This test ensures that PKCE work in "plain" mode (no code_challenge_method specified)
+				name: "PKCE with plain",
+				authCodeOptions: []oauth2.AuthCodeOption{
+					oauth2.SetAuthURLParam("code_challenge", "challenge123"),
+				},
+				retrieveTokenOptions: []oauth2.AuthCodeOption{
+					oauth2.SetAuthURLParam("code_verifier", "challenge123"),
+				},
+				handleToken: basicIDTokenVerify,
+			},
+			{
+				// This test ensures that PKCE works in "S256" mode
+				name: "PKCE with S256",
+				authCodeOptions: []oauth2.AuthCodeOption{
+					oauth2.SetAuthURLParam("code_challenge", "lyyl-X4a69qrqgEfUL8wodWic3Be9ZZ5eovBgIKKi-w"),
+					oauth2.SetAuthURLParam("code_challenge_method", "S256"),
+				},
+				retrieveTokenOptions: []oauth2.AuthCodeOption{
+					oauth2.SetAuthURLParam("code_verifier", "challenge123"),
+				},
+				handleToken: basicIDTokenVerify,
+			},
+			{
+				// This test ensures that PKCE does fail with wrong code_verifier in "plain" mode
+				name: "PKCE with plain and wrong code_verifier",
+				authCodeOptions: []oauth2.AuthCodeOption{
+					oauth2.SetAuthURLParam("code_challenge", "challenge123"),
+				},
+				retrieveTokenOptions: []oauth2.AuthCodeOption{
+					oauth2.SetAuthURLParam("code_verifier", "challenge124"),
+				},
+				handleToken: basicIDTokenVerify,
+				tokenError: ErrorResponse{
+					Error:      errInvalidGrant,
+					StatusCode: http.StatusBadRequest,
+				},
+			},
+			{
+				// This test ensures that PKCE fail with wrong code_verifier in "S256" mode
+				name: "PKCE with S256 and wrong code_verifier",
+				authCodeOptions: []oauth2.AuthCodeOption{
+					oauth2.SetAuthURLParam("code_challenge", "lyyl-X4a69qrqgEfUL8wodWic3Be9ZZ5eovBgIKKi-w"),
+					oauth2.SetAuthURLParam("code_challenge_method", "S256"),
+				},
+				retrieveTokenOptions: []oauth2.AuthCodeOption{
+					oauth2.SetAuthURLParam("code_verifier", "challenge124"),
+				},
+				handleToken: basicIDTokenVerify,
+				tokenError: ErrorResponse{
+					Error:      errInvalidGrant,
+					StatusCode: http.StatusBadRequest,
+				},
+			},
+			{
+				// Ensure that, when PKCE flow started on /auth
+				// we stay in PKCE flow on /token
+				name: "PKCE flow expected on /token",
+				authCodeOptions: []oauth2.AuthCodeOption{
+					oauth2.SetAuthURLParam("code_challenge", "lyyl-X4a69qrqgEfUL8wodWic3Be9ZZ5eovBgIKKi-w"),
+					oauth2.SetAuthURLParam("code_challenge_method", "S256"),
+				},
+				retrieveTokenOptions: []oauth2.AuthCodeOption{
+					// No PKCE call on /token
+				},
+				handleToken: basicIDTokenVerify,
+				tokenError: ErrorResponse{
+					Error:      errInvalidGrant,
+					StatusCode: http.StatusBadRequest,
+				},
+			},
+			{
+				// Ensure that when no PKCE flow was started on /auth
+				// we cannot switch to PKCE on /token
+				name:            "No PKCE flow started on /auth",
+				authCodeOptions: []oauth2.AuthCodeOption{
+					// No PKCE call on /auth
+				},
+				retrieveTokenOptions: []oauth2.AuthCodeOption{
+					oauth2.SetAuthURLParam("code_verifier", "challenge123"),
+				},
+				handleToken: basicIDTokenVerify,
+				tokenError: ErrorResponse{
+					Error:      errInvalidRequest,
+					StatusCode: http.StatusBadRequest,
+				},
+			},
+			{
+				// Make sure that, when we start with "S256" on /auth, we cannot downgrade to "plain" on /token
+				name: "PKCE with S256 and try to downgrade to plain",
+				authCodeOptions: []oauth2.AuthCodeOption{
+					oauth2.SetAuthURLParam("code_challenge", "lyyl-X4a69qrqgEfUL8wodWic3Be9ZZ5eovBgIKKi-w"),
+					oauth2.SetAuthURLParam("code_challenge_method", "S256"),
+				},
+				retrieveTokenOptions: []oauth2.AuthCodeOption{
+					oauth2.SetAuthURLParam("code_verifier", "lyyl-X4a69qrqgEfUL8wodWic3Be9ZZ5eovBgIKKi-w"),
+					oauth2.SetAuthURLParam("code_challenge_method", "plain"),
+				},
+				handleToken: basicIDTokenVerify,
+				tokenError: ErrorResponse{
+					Error:      errInvalidGrant,
+					StatusCode: http.StatusBadRequest,
+				},
+			},
 		},
 	}
 }
@@ -504,7 +642,7 @@ func TestOAuth2CodeFlow(t *testing.T) {
 
 			// Setup a dex server.
 			httpServer, s := newTestServer(ctx, t, func(c *Config) {
-				c.Issuer = c.Issuer + "/non-root-path"
+				c.Issuer += "/non-root-path"
 				c.Now = now
 				c.IDTokensValidFor = idTokensValidFor
 			})
@@ -537,7 +675,7 @@ func TestOAuth2CodeFlow(t *testing.T) {
 			oauth2Client := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path != "/callback" {
 					// User is visiting app first time. Redirect to dex.
-					http.Redirect(w, r, oauth2Config.AuthCodeURL(state), http.StatusSeeOther)
+					http.Redirect(w, r, oauth2Config.AuthCodeURL(state, tc.authCodeOptions...), http.StatusSeeOther)
 					return
 				}
 
@@ -558,7 +696,11 @@ func TestOAuth2CodeFlow(t *testing.T) {
 				// Grab code, exchange for token.
 				if code := q.Get("code"); code != "" {
 					gotCode = true
-					token, err := oauth2Config.Exchange(ctx, code)
+					token, err := oauth2Config.Exchange(ctx, code, tc.retrieveTokenOptions...)
+					if tc.tokenError.StatusCode != 0 {
+						checkErrorResponse(err, t, tc)
+						return
+					}
 					if err != nil {
 						t.Errorf("failed to exchange code for token: %v", err)
 						return
@@ -766,7 +908,7 @@ func TestCrossClientScopes(t *testing.T) {
 	defer cancel()
 
 	httpServer, s := newTestServer(ctx, t, func(c *Config) {
-		c.Issuer = c.Issuer + "/non-root-path"
+		c.Issuer += "/non-root-path"
 	})
 	defer httpServer.Close()
 
@@ -889,7 +1031,7 @@ func TestCrossClientScopesWithAzpInAudienceByDefault(t *testing.T) {
 	defer cancel()
 
 	httpServer, s := newTestServer(ctx, t, func(c *Config) {
-		c.Issuer = c.Issuer + "/non-root-path"
+		c.Issuer += "/non-root-path"
 	})
 	defer httpServer.Close()
 
@@ -1170,6 +1312,30 @@ func TestKeyCacher(t *testing.T) {
 	}
 }
 
+func checkErrorResponse(err error, t *testing.T, tc test) {
+	if err == nil {
+		t.Errorf("%s: DANGEROUS! got a token when we should not get one!", tc.name)
+		return
+	}
+	if rErr, ok := err.(*oauth2.RetrieveError); ok {
+		if rErr.Response.StatusCode != tc.tokenError.StatusCode {
+			t.Errorf("%s: got wrong StatusCode from server %d. expected %d",
+				tc.name, rErr.Response.StatusCode, tc.tokenError.StatusCode)
+		}
+		details := new(OAuth2ErrorResponse)
+		if err := json.Unmarshal(rErr.Body, details); err != nil {
+			t.Errorf("%s: could not parse return json: %s", tc.name, err)
+			return
+		}
+		if tc.tokenError.Error != "" && details.Error != tc.tokenError.Error {
+			t.Errorf("%s: got wrong Error in response: %s (%s). expected %s",
+				tc.name, details.Error, details.ErrorDescription, tc.tokenError.Error)
+		}
+	} else {
+		t.Errorf("%s: unexpected error type: %s. expected *oauth2.RetrieveError", tc.name, reflect.TypeOf(err))
+	}
+}
+
 type oauth2Client struct {
 	config *oauth2.Config
 	token  *oauth2.Token
@@ -1180,7 +1346,7 @@ type oauth2Client struct {
 // that only valid refresh tokens can be used to refresh an expired token.
 func TestRefreshTokenFlow(t *testing.T) {
 	state := "state"
-	now := func() time.Time { return time.Now() }
+	now := time.Now
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -1300,7 +1466,7 @@ func TestOAuth2DeviceFlow(t *testing.T) {
 
 			// Setup a dex server.
 			httpServer, s := newTestServer(ctx, t, func(c *Config) {
-				c.Issuer = c.Issuer + "/non-root-path"
+				c.Issuer += "/non-root-path"
 				c.Now = now
 				c.IDTokensValidFor = idTokensValidFor
 			})
@@ -1314,7 +1480,7 @@ func TestOAuth2DeviceFlow(t *testing.T) {
 				t.Fatalf("failed to get provider: %v", err)
 			}
 
-			//Add the Clients to the test server
+			// Add the Clients to the test server
 			client := storage.Client{
 				ID:           clientID,
 				RedirectURIs: []string{deviceCallbackURI},
@@ -1324,13 +1490,13 @@ func TestOAuth2DeviceFlow(t *testing.T) {
 				t.Fatalf("failed to create client: %v", err)
 			}
 
-			//Grab the issuer that we'll reuse for the different endpoints to hit
+			// Grab the issuer that we'll reuse for the different endpoints to hit
 			issuer, err := url.Parse(s.issuerURL.String())
 			if err != nil {
 				t.Errorf("Could not parse issuer URL %v", err)
 			}
 
-			//Send a new Device Request
+			// Send a new Device Request
 			codeURL, _ := url.Parse(issuer.String())
 			codeURL.Path = path.Join(codeURL.Path, "device/code")
 
@@ -1350,13 +1516,13 @@ func TestOAuth2DeviceFlow(t *testing.T) {
 				t.Errorf("%v - Unexpected Response Type.  Expected 200 got  %v.  Response: %v", tc.name, resp.StatusCode, string(responseBody))
 			}
 
-			//Parse the code response
+			// Parse the code response
 			var deviceCode deviceCodeResponse
 			if err := json.Unmarshal(responseBody, &deviceCode); err != nil {
 				t.Errorf("Unexpected Device Code Response Format %v", string(responseBody))
 			}
 
-			//Mock the user hitting the verification URI and posting the form
+			// Mock the user hitting the verification URI and posting the form
 			verifyURL, _ := url.Parse(issuer.String())
 			verifyURL.Path = path.Join(verifyURL.Path, "/device/auth/verify_code")
 			urlData := url.Values{}
@@ -1374,7 +1540,7 @@ func TestOAuth2DeviceFlow(t *testing.T) {
 				t.Errorf("%v - Unexpected Response Type.  Expected 200 got  %v.  Response: %v", tc.name, resp.StatusCode, string(responseBody))
 			}
 
-			//Hit the Token Endpoint, and try and get an access token
+			// Hit the Token Endpoint, and try and get an access token
 			tokenURL, _ := url.Parse(issuer.String())
 			tokenURL.Path = path.Join(tokenURL.Path, "/device/token")
 			v := url.Values{}
@@ -1393,7 +1559,7 @@ func TestOAuth2DeviceFlow(t *testing.T) {
 				t.Errorf("%v - Unexpected Token Response Type.  Expected 200 got  %v.  Response: %v", tc.name, resp.StatusCode, string(responseBody))
 			}
 
-			//Parse the response
+			// Parse the response
 			var tokenRes accessTokenReponse
 			if err := json.Unmarshal(responseBody, &tokenRes); err != nil {
 				t.Errorf("Unexpected Device Access Token Response Format %v", string(responseBody))
@@ -1411,7 +1577,7 @@ func TestOAuth2DeviceFlow(t *testing.T) {
 				token.Expiry = time.Now().Add(time.Duration(secs) * time.Second)
 			}
 
-			//Run token tests to validate info is correct
+			// Run token tests to validate info is correct
 			// Create the OAuth2 config.
 			oauth2Config := &oauth2.Config{
 				ClientID:     client.ID,
