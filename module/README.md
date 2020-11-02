@@ -1,0 +1,1 @@
+go module files, so WhiteSource can find the dex package
