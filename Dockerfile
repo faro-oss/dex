@@ -31,6 +31,12 @@ USER 1001:1001
 
 COPY --from=0 /go/bin/dex /usr/local/bin/dex
 
+# Copy module dependencies for the WhiteSource scanner
+COPY go.mod /dependency/go.mod
+COPY go.sum /dependency/go.sum
+COPY module/go.mod /dependency/module/go.mod
+COPY module/go.sum /dependency/module/go.sum
+
 # Import frontend assets and set the correct CWD directory so the assets
 # are in the default path.
 COPY web web
