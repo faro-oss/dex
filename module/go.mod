@@ -2,4 +2,4 @@ module module
 
 go 1.15
 
-require github.com/dexidp/dex v2.13.0+incompatible // indirect
+require github.com/dexidp/dex v0.0.0-20201105104416-6500fdbdd1be // indirect
