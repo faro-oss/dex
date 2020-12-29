@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	"golang.org/x/crypto/bcrypt"
@@ -181,6 +182,20 @@ var storages = map[string]func() StorageConfig{
 	"mysql":      func() StorageConfig { return new(sql.MySQL) },
 }
 
+// isExpandEnvEnabled returns if os.ExpandEnv should be used for each storage and connector config.
+// Disabling this feature avoids surprises e.g. if the LDAP bind password contains a dollar character.
+// Returns true if the env variable "DEX_EXPAND_ENV" is unset or a truthy string, e.g. "true".
+// Returns false if the env variable is a falsy string, e.g. "false".
+// Returns an error if the env variable can't be parsed into a bool.
+func isExpandEnvEnabled() (bool, error) {
+	dexExpandEnv, exists := os.LookupEnv("DEX_EXPAND_ENV")
+	if !exists {
+		// Default, for downwards-compatibility: DEX_EXPAND_ENV = true
+		return true, nil
+	}
+	return strconv.ParseBool(dexExpandEnv)
+}
+
 // UnmarshalJSON allows Storage to implement the unmarshaler interface to
 // dynamically determine the type of the storage config.
 func (s *Storage) UnmarshalJSON(b []byte) error {
@@ -191,6 +206,10 @@ func (s *Storage) UnmarshalJSON(b []byte) error {
 	if err := json.Unmarshal(b, &store); err != nil {
 		return fmt.Errorf("parse storage: %v", err)
 	}
+	expandEnvEnabled, err := isExpandEnvEnabled()
+	if err != nil {
+		return fmt.Errorf("parse storage, env variable DEX_EXPAND_ENV: %v", err)
+	}
 	f, ok := storages[store.Type]
 	if !ok {
 		return fmt.Errorf("unknown storage type %q", store.Type)
@@ -198,7 +217,11 @@ func (s *Storage) UnmarshalJSON(b []byte) error {
 
 	storageConfig := f()
 	if len(store.Config) != 0 {
-		data := []byte(os.ExpandEnv(string(store.Config)))
+		data := []byte(store.Config)
+		if expandEnvEnabled {
+			// Caution, we're expanding in the raw JSON/YAML source. This may not be what the admin expects.
+			data = []byte(os.ExpandEnv(string(store.Config)))
+		}
 		if err := json.Unmarshal(data, storageConfig); err != nil {
 			return fmt.Errorf("parse storage config: %v", err)
 		}
@@ -233,6 +256,10 @@ func (c *Connector) UnmarshalJSON(b []byte) error {
 	if err := json.Unmarshal(b, &conn); err != nil {
 		return fmt.Errorf("parse connector: %v", err)
 	}
+	expandEnvEnabled, err := isExpandEnvEnabled()
+	if err != nil {
+		return fmt.Errorf("parse connector, env variable DEX_EXPAND_ENV: %v", err)
+	}
 	f, ok := server.ConnectorsConfig[conn.Type]
 	if !ok {
 		return fmt.Errorf("unknown connector type %q", conn.Type)
@@ -240,7 +267,11 @@ func (c *Connector) UnmarshalJSON(b []byte) error {
 
 	connConfig := f()
 	if len(conn.Config) != 0 {
-		data := []byte(os.ExpandEnv(string(conn.Config)))
+		data := []byte(conn.Config)
+		if expandEnvEnabled {
+			// Caution, we're expanding in the raw JSON/YAML source. This may not be what the admin expects.
+			data = []byte(os.ExpandEnv(string(conn.Config)))
+		}
 		if err := json.Unmarshal(data, connConfig); err != nil {
 			return fmt.Errorf("parse connector config: %v", err)
 		}
