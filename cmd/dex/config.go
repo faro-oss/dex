@@ -181,6 +181,14 @@ var storages = map[string]func() StorageConfig{
 	"mysql":      func() StorageConfig { return new(sql.MySQL) },
 }
 
+// isExpandEnvEnabled returns if os.ExpandEnv should be used for each storage and connector config.
+// Disabling this feature avoids surprises e.g. if the LDAP bind password contains a dollar character.
+// True by default, to avoid a breaking change.
+// False if the env variable "DEX_EXPAND_ENV" is set to "0".
+func isExpandEnvEnabled() bool {
+	return os.Getenv("DEX_EXPAND_ENV") != "0"
+}
+
 // UnmarshalJSON allows Storage to implement the unmarshaler interface to
 // dynamically determine the type of the storage config.
 func (s *Storage) UnmarshalJSON(b []byte) error {
@@ -198,7 +206,11 @@ func (s *Storage) UnmarshalJSON(b []byte) error {
 
 	storageConfig := f()
 	if len(store.Config) != 0 {
-		data := []byte(os.ExpandEnv(string(store.Config)))
+		data := []byte(store.Config)
+		if isExpandEnvEnabled() {
+			// Caution, we're expanding in the raw JSON/YAML source. This may not be what the admin expects.
+			data = []byte(os.ExpandEnv(string(store.Config)))
+		}
 		if err := json.Unmarshal(data, storageConfig); err != nil {
 			return fmt.Errorf("parse storage config: %v", err)
 		}
@@ -240,7 +252,11 @@ func (c *Connector) UnmarshalJSON(b []byte) error {
 
 	connConfig := f()
 	if len(conn.Config) != 0 {
-		data := []byte(os.ExpandEnv(string(conn.Config)))
+		data := []byte(conn.Config)
+		if isExpandEnvEnabled() {
+			// Caution, we're expanding in the raw JSON/YAML source. This may not be what the admin expects.
+			data = []byte(os.ExpandEnv(string(conn.Config)))
+		}
 		if err := json.Unmarshal(data, connConfig); err != nil {
 			return fmt.Errorf("parse connector config: %v", err)
 		}
