@@ -29,7 +29,7 @@ import (
 //       # The following field is required if using port 389.
 //       # insecureNoSSL: true
 //       rootCA: /etc/dex/ldap.ca
-//       bindDN: uid=seviceaccount,cn=users,dc=example,dc=com
+//       bindDN: uid=serviceaccount,cn=users,dc=example,dc=com
 //       bindPW: password
 //       userSearch:
 //         # Would translate to the query "(&(objectClass=person)(uid=<username>))"
@@ -56,11 +56,13 @@ import (
 //         nameAttr: name
 //
 
+// UserMatcher holds information about user and group matching.
 type UserMatcher struct {
 	UserAttr  string `json:"userAttr"`
 	GroupAttr string `json:"groupAttr"`
 }
 
+// Config holds configuration options for LDAP logins.
 type Config struct {
 	// The host and optional port of the LDAP server. If port isn't supplied, it will be
 	// guessed based on the TLS configuration. 389 or 636.
@@ -187,14 +189,14 @@ func parseScope(s string) (int, bool) {
 // See "Config.GroupSearch.UserMatchers" comments for the details
 func (c *ldapConnector) userMatchers() []UserMatcher {
 	if len(c.GroupSearch.UserMatchers) > 0 && c.GroupSearch.UserMatchers[0].UserAttr != "" {
-		return c.GroupSearch.UserMatchers[:]
-	} else {
-		return []UserMatcher{
-			{
-				UserAttr:  c.GroupSearch.UserAttr,
-				GroupAttr: c.GroupSearch.GroupAttr,
-			},
-		}
+		return c.GroupSearch.UserMatchers
+	}
+
+	return []UserMatcher{
+		{
+			UserAttr:  c.GroupSearch.UserAttr,
+			GroupAttr: c.GroupSearch.GroupAttr,
+		},
 	}
 }
 
@@ -244,9 +246,9 @@ func (c *Config) openConnector(logger log.Logger) (*ldapConnector, error) {
 	if host, _, err = net.SplitHostPort(c.Host); err != nil {
 		host = c.Host
 		if c.InsecureNoSSL {
-			c.Host = c.Host + ":389"
+			c.Host += ":389"
 		} else {
-			c.Host = c.Host + ":636"
+			c.Host += ":636"
 		}
 	}
 
@@ -303,7 +305,7 @@ var (
 // do initializes a connection to the LDAP directory and passes it to the
 // provided function. It then performs appropriate teardown or reuse before
 // returning.
-func (c *ldapConnector) do(ctx context.Context, f func(c *ldap.Conn) error) error {
+func (c *ldapConnector) do(_ context.Context, f func(c *ldap.Conn) error) error {
 	// TODO(ericchiang): support context here
 	var (
 		conn *ldap.Conn

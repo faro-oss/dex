@@ -23,38 +23,53 @@ import (
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/reflection"
 
-	"github.com/dexidp/dex/api"
+	"github.com/dexidp/dex/api/v2"
 	"github.com/dexidp/dex/pkg/log"
 	"github.com/dexidp/dex/server"
 	"github.com/dexidp/dex/storage"
 )
 
-func commandServe() *cobra.Command {
-	return &cobra.Command{
-		Use:     "serve [ config file ]",
-		Short:   "Connect to the storage and begin serving requests.",
-		Long:    ``,
-		Example: "dex serve config.yaml",
-		Run: func(cmd *cobra.Command, args []string) {
-			if err := serve(cmd, args); err != nil {
-				fmt.Fprintln(os.Stderr, err)
-				os.Exit(2)
-			}
-		},
-	}
+type serveOptions struct {
+	// Config file path
+	config string
+
+	// Flags
+	webHTTPAddr   string
+	webHTTPSAddr  string
+	telemetryAddr string
+	grpcAddr      string
 }
 
-func serve(cmd *cobra.Command, args []string) error {
-	switch len(args) {
-	default:
-		return errors.New("surplus arguments")
-	case 0:
-		// TODO(ericchiang): Consider having a default config file location.
-		return errors.New("no arguments provided")
-	case 1:
+func commandServe() *cobra.Command {
+	options := serveOptions{}
+
+	cmd := &cobra.Command{
+		Use:     "serve [flags] [config file]",
+		Short:   "Launch Dex",
+		Example: "dex serve config.yaml",
+		Args:    cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cmd.SilenceUsage = true
+			cmd.SilenceErrors = true
+
+			options.config = args[0]
+
+			return runServe(options)
+		},
 	}
 
-	configFile := args[0]
+	flags := cmd.Flags()
+
+	flags.StringVar(&options.webHTTPAddr, "web-http-addr", "", "Web HTTP address")
+	flags.StringVar(&options.webHTTPSAddr, "web-https-addr", "", "Web HTTPS address")
+	flags.StringVar(&options.telemetryAddr, "telemetry-addr", "", "Telemetry address")
+	flags.StringVar(&options.grpcAddr, "grpc-addr", "", "gRPC API address")
+
+	return cmd
+}
+
+func runServe(options serveOptions) error {
+	configFile := options.config
 	configData, err := ioutil.ReadFile(configFile)
 	if err != nil {
 		return fmt.Errorf("failed to read config file %s: %v", configFile, err)
@@ -64,6 +79,8 @@ func serve(cmd *cobra.Command, args []string) error {
 	if err := yaml.Unmarshal(configData, &c); err != nil {
 		return fmt.Errorf("error parse config file %s: %v", configFile, err)
 	}
+
+	applyConfigOverrides(options, &c)
 
 	logger, err := newLogger(c.Logger.Level, c.Logger.Format)
 	if err != nil {
@@ -166,7 +183,7 @@ func serve(cmd *cobra.Command, args []string) error {
 				}
 				c.StaticClients[i].ID = os.Getenv(client.IDEnv)
 			}
-			if client.Secret == "" && client.SecretEnv == "" {
+			if client.Secret == "" && client.SecretEnv == "" && !client.Public {
 				return fmt.Errorf("invalid config: Secret or SecretEnv field is required for client %q", client.ID)
 			}
 			if client.SecretEnv != "" {
@@ -269,7 +286,14 @@ func serve(cmd *cobra.Command, args []string) error {
 		logger.Infof("config auth requests valid for: %v", authRequests)
 		serverConfig.AuthRequestsValidFor = authRequests
 	}
-
+	if c.Expiry.DeviceRequests != "" {
+		deviceRequests, err := time.ParseDuration(c.Expiry.DeviceRequests)
+		if err != nil {
+			return fmt.Errorf("invalid config value %q for device request expiry: %v", c.Expiry.AuthRequests, err)
+		}
+		logger.Infof("config device requests valid for: %v", deviceRequests)
+		serverConfig.DeviceRequestsValidFor = deviceRequests
+	}
 	serv, err := server.NewServer(context.Background(), serverConfig)
 	if err != nil {
 		return fmt.Errorf("failed to initialize server: %v", err)
@@ -376,4 +400,22 @@ func newLogger(level string, format string) (log.Logger, error) {
 		Formatter: &formatter,
 		Level:     logLevel,
 	}, nil
+}
+
+func applyConfigOverrides(options serveOptions, config *Config) {
+	if options.webHTTPAddr != "" {
+		config.Web.HTTP = options.webHTTPAddr
+	}
+
+	if options.webHTTPSAddr != "" {
+		config.Web.HTTPS = options.webHTTPSAddr
+	}
+
+	if options.telemetryAddr != "" {
+		config.Telemetry.HTTP = options.telemetryAddr
+	}
+
+	if options.grpcAddr != "" {
+		config.GRPC.Addr = options.grpcAddr
+	}
 }

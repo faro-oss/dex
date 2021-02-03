@@ -35,12 +35,18 @@ import (
 //       - admin
 //       # Prompt for username field
 //       usernamePrompt: Login
+//		 preferredUsernameField: name
 //
 type Config struct {
 	BaseURL      string   `json:"baseURL"`
 	ClientID     string   `json:"clientID"`
 	ClientSecret string   `json:"clientSecret"`
 	Groups       []string `json:"groups"`
+
+	// PreferredUsernameField allows users to set the field to any of the
+	// following values: "key", "name" or "email".
+	// If unset, the preferred_username field will remain empty.
+	PreferredUsernameField string `json:"preferredUsernameField"`
 
 	// UsernamePrompt allows users to override the username attribute (displayed
 	// in the username/password prompt). If unset, the handler will use.
@@ -105,7 +111,7 @@ func (c *crowdConnector) Login(ctx context.Context, s connector.Scopes, username
 
 	// We want to return a different error if the user's password is incorrect vs
 	// if there was an error.
-	incorrectPass := false
+	var incorrectPass bool
 	var user crowdUser
 
 	client := c.crowdAPIClient()
@@ -366,6 +372,19 @@ func (c *crowdConnector) identityFromCrowdUser(user crowdUser) (connector.Identi
 		UserID:        user.Key,
 		Email:         user.Email,
 		EmailVerified: true,
+	}
+
+	switch c.PreferredUsernameField {
+	case "key":
+		identity.PreferredUsername = user.Key
+	case "name":
+		identity.PreferredUsername = user.Name
+	case "email":
+		identity.PreferredUsername = user.Email
+	default:
+		if c.PreferredUsernameField != "" {
+			c.logger.Warnf("preferred_username left empty. Invalid crowd field mapped to preferred_username: %s", c.PreferredUsernameField)
+		}
 	}
 
 	return identity, nil

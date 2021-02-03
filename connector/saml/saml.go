@@ -7,13 +7,15 @@ import (
 	"encoding/base64"
 	"encoding/pem"
 	"encoding/xml"
-	"errors"
 	"fmt"
 	"io/ioutil"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/beevik/etree"
+	xrv "github.com/mattermost/xml-roundtrip-validator"
+	"github.com/pkg/errors"
 	dsig "github.com/russellhaering/goxmldsig"
 	"github.com/russellhaering/goxmldsig/etreeutils"
 
@@ -64,20 +66,9 @@ var (
 		nameIDformatTransient,
 	}
 	nameIDFormatLookup = make(map[string]string)
-)
 
-func init() {
-	suffix := func(s, sep string) string {
-		if i := strings.LastIndex(s, sep); i > 0 {
-			return s[i+1:]
-		}
-		return s
-	}
-	for _, format := range nameIDFormats {
-		nameIDFormatLookup[suffix(format, ":")] = format
-		nameIDFormatLookup[format] = format
-	}
-}
+	lookupOnce sync.Once
+)
 
 // Config represents configuration options for the SAML provider.
 type Config struct {
@@ -105,6 +96,7 @@ type Config struct {
 	// used split the groups string.
 	GroupsDelim   string   `json:"groupsDelim"`
 	AllowedGroups []string `json:"allowedGroups"`
+	FilterGroups  bool     `json:"filterGroups"`
 	RedirectURI   string   `json:"redirectURI"`
 
 	// Requested format of the NameID. The NameID value is is mapped to the ID Token
@@ -169,6 +161,7 @@ func (c *Config) openConnector(logger log.Logger) (*provider, error) {
 		groupsAttr:    c.GroupsAttr,
 		groupsDelim:   c.GroupsDelim,
 		allowedGroups: c.AllowedGroups,
+		filterGroups:  c.FilterGroups,
 		redirectURI:   c.RedirectURI,
 		logger:        logger,
 
@@ -178,6 +171,19 @@ func (c *Config) openConnector(logger log.Logger) (*provider, error) {
 	if p.nameIDPolicyFormat == "" {
 		p.nameIDPolicyFormat = nameIDFormatPersistent
 	} else {
+		lookupOnce.Do(func() {
+			suffix := func(s, sep string) string {
+				if i := strings.LastIndex(s, sep); i > 0 {
+					return s[i+1:]
+				}
+				return s
+			}
+			for _, format := range nameIDFormats {
+				nameIDFormatLookup[suffix(format, ":")] = format
+				nameIDFormatLookup[format] = format
+			}
+		})
+
 		if format, ok := nameIDFormatLookup[p.nameIDPolicyFormat]; ok {
 			p.nameIDPolicyFormat = format
 		} else {
@@ -244,6 +250,7 @@ type provider struct {
 	groupsAttr    string
 	groupsDelim   string
 	allowedGroups []string
+	filterGroups  bool
 
 	redirectURI string
 
@@ -285,6 +292,7 @@ func (p *provider) POSTData(s connector.Scopes, id string) (action, value string
 //
 // The steps taken are:
 //
+// * Validate XML document does not contain malicious inputs.
 // * Verify signature on XML document (or verify sig on assertion elements).
 // * Verify various parts of the Assertion element. Conditions, audience, etc.
 // * Map the Assertion's attribute elements to user info.
@@ -293,6 +301,11 @@ func (p *provider) HandlePOST(s connector.Scopes, samlResponse, inResponseTo str
 	rawResp, err := base64.StdEncoding.DecodeString(samlResponse)
 	if err != nil {
 		return ident, fmt.Errorf("decode response: %v", err)
+	}
+
+	byteReader := bytes.NewReader(rawResp)
+	if xrvErr := xrv.Validate(byteReader); xrvErr != nil {
+		return ident, errors.Wrap(xrvErr, "validating XML response")
 	}
 
 	// Root element is allowed to not be signed if the Assertion element is.
@@ -365,7 +378,7 @@ func (p *provider) HandlePOST(s connector.Scopes, samlResponse, inResponseTo str
 	switch {
 	case subject.NameID != nil:
 		if ident.UserID = subject.NameID.Value; ident.UserID == "" {
-			return ident, fmt.Errorf("NameID element does not contain a value")
+			return ident, fmt.Errorf("element NameID does not contain a value")
 		}
 	default:
 		return ident, fmt.Errorf("subject does not contain an NameID element")
@@ -434,6 +447,10 @@ func (p *provider) HandlePOST(s connector.Scopes, samlResponse, inResponseTo str
 		return ident, fmt.Errorf("user not a member of allowed groups")
 	}
 
+	if p.filterGroups {
+		ident.Groups = groupMatches
+	}
+
 	// Otherwise, we're good
 	return ident, nil
 }
@@ -458,7 +475,7 @@ func GetSAMLIssuer(samlResponse string) (string, error) {
 }
 
 // validateStatus verifies that the response has a good status code or
-// formats a human readble error based on the bad status.
+// formats a human readable error based on the bad status.
 func (p *provider) validateStatus(status *status) error {
 	// StatusCode is mandatory in the Status type
 	statusCode := status.StatusCode
@@ -486,7 +503,7 @@ func (p *provider) validateStatus(status *status) error {
 // see https://www.oasis-open.org/committees/download.php/35389/sstc-saml-profiles-errata-2.0-wd-06-diff.pdf
 //
 // Some of these fields are optional, but we're going to be strict here since
-// we have no other way of guarenteeing that this is actually the response to
+// we have no other way of guaranteeing that this is actually the response to
 // the request we expect.
 func (p *provider) validateSubject(subject *subject, inResponseTo string) error {
 	// Optional according to the spec, but again, we're going to be strict here.
@@ -504,7 +521,7 @@ func (p *provider) validateSubject(subject *subject, inResponseTo string) error 
 
 			data := c.SubjectConfirmationData
 			if data == nil {
-				return fmt.Errorf("SubjectConfirmation contained no SubjectConfirmationData")
+				return fmt.Errorf("no SubjectConfirmationData field found in SubjectConfirmation")
 			}
 			if data.InResponseTo != inResponseTo {
 				return fmt.Errorf("expected SubjectConfirmationData InResponseTo value %q, got %q", inResponseTo, data.InResponseTo)

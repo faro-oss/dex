@@ -10,7 +10,7 @@ import (
 	"github.com/sirupsen/logrus"
 	"google.golang.org/grpc"
 
-	"github.com/dexidp/dex/api"
+	"github.com/dexidp/dex/api/v2"
 	"github.com/dexidp/dex/pkg/log"
 	"github.com/dexidp/dex/server/internal"
 	"github.com/dexidp/dex/storage"
@@ -23,7 +23,7 @@ import (
 type apiClient struct {
 	// Embedded gRPC client to talk to the server.
 	api.DexClient
-	// Close releases resources associated with this client, includuing shutting
+	// Close releases resources associated with this client, including shutting
 	// down the background server.
 	Close func()
 }
@@ -226,7 +226,7 @@ func TestCheckCost(t *testing.T) {
 	}
 }
 
-// Attempts to list and revoke an exisiting refresh token.
+// Attempts to list and revoke an existing refresh token.
 func TestRefreshToken(t *testing.T) {
 	logger := &logrus.Logger{
 		Out:       os.Stderr,
@@ -291,7 +291,7 @@ func TestRefreshToken(t *testing.T) {
 		t.Errorf("failed to marshal offline session ID: %v", err)
 	}
 
-	//Testing the api.
+	// Testing the api.
 	listReq := api.ListRefreshReq{
 		UserId: subjectString,
 	}

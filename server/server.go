@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"crypto/rsa"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -24,6 +25,7 @@ import (
 	"github.com/dexidp/dex/connector/atlassiancrowd"
 	"github.com/dexidp/dex/connector/authproxy"
 	"github.com/dexidp/dex/connector/bitbucketcloud"
+	"github.com/dexidp/dex/connector/gitea"
 	"github.com/dexidp/dex/connector/github"
 	"github.com/dexidp/dex/connector/gitlab"
 	"github.com/dexidp/dex/connector/google"
@@ -74,9 +76,10 @@ type Config struct {
 	// If enabled, the connectors selection page will always be shown even if there's only one
 	AlwaysShowLoginScreen bool
 
-	RotateKeysAfter      time.Duration // Defaults to 6 hours.
-	IDTokensValidFor     time.Duration // Defaults to 24 hours
-	AuthRequestsValidFor time.Duration // Defaults to 24 hours
+	RotateKeysAfter        time.Duration // Defaults to 6 hours.
+	IDTokensValidFor       time.Duration // Defaults to 24 hours
+	AuthRequestsValidFor   time.Duration // Defaults to 24 hours
+	DeviceRequestsValidFor time.Duration // Defaults to 5 minutes
 	// If set, the server will use this connector to handle password grants
 	PasswordConnector string
 
@@ -93,9 +96,6 @@ type Config struct {
 }
 
 // WebConfig holds the server's frontend templates and asset configuration.
-//
-// These are currently very custom to CoreOS and it's not recommended that
-// outside users attempt to customize these.
 type WebConfig struct {
 	// A filepath to web static.
 	//
@@ -113,7 +113,7 @@ type WebConfig struct {
 	// Defaults to "dex"
 	Issuer string
 
-	// Defaults to "coreos"
+	// Defaults to "light"
 	Theme string
 
 	// Map of extra values passed into the templates
@@ -155,8 +155,9 @@ type Server struct {
 
 	now func() time.Time
 
-	idTokensValidFor     time.Duration
-	authRequestsValidFor time.Duration
+	idTokensValidFor       time.Duration
+	authRequestsValidFor   time.Duration
+	deviceRequestsValidFor time.Duration
 
 	logger log.Logger
 }
@@ -166,6 +167,13 @@ func NewServer(ctx context.Context, c Config) (*Server, error) {
 	return newServer(ctx, c, defaultRotationStrategy(
 		value(c.RotateKeysAfter, 6*time.Hour),
 		value(c.IDTokensValidFor, 24*time.Hour),
+	))
+}
+
+// NewServerWithKey constructs a server from the provided config and a static signing key.
+func NewServerWithKey(ctx context.Context, c Config, privateKey *rsa.PrivateKey) (*Server, error) {
+	return newServer(ctx, c, staticRotationStrategy(
+		privateKey,
 	))
 }
 
@@ -218,6 +226,7 @@ func newServer(ctx context.Context, c Config, rotationStrategy rotationStrategy)
 		supportedResponseTypes: supported,
 		idTokensValidFor:       value(c.IDTokensValidFor, 24*time.Hour),
 		authRequestsValidFor:   value(c.AuthRequestsValidFor, 24*time.Hour),
+		deviceRequestsValidFor: value(c.DeviceRequestsValidFor, 5*time.Minute),
 		skipApproval:           c.SkipApprovalScreen,
 		alwaysShowLogin:        c.AlwaysShowLoginScreen,
 		now:                    now,
@@ -282,12 +291,18 @@ func newServer(ctx context.Context, c Config, rotationStrategy rotationStrategy)
 	handleWithCORS := func(p string, h http.HandlerFunc) {
 		var handler http.Handler = h
 		if len(c.AllowedOrigins) > 0 {
-			corsOption := handlers.AllowedOrigins(c.AllowedOrigins)
-			handler = handlers.CORS(corsOption)(handler)
+			allowedHeaders := []string{
+				"Authorization",
+			}
+			cors := handlers.CORS(
+				handlers.AllowedOrigins(c.AllowedOrigins),
+				handlers.AllowedHeaders(allowedHeaders),
+			)
+			handler = cors(handler)
 		}
 		r.Handle(path.Join(issuerURL.Path, p), instrumentHandlerCounter(p, handler))
 	}
-	r.NotFoundHandler = http.HandlerFunc(http.NotFound)
+	r.NotFoundHandler = http.NotFoundHandler()
 
 	discoveryHandler, err := s.discoveryHandler()
 	if err != nil {
@@ -301,6 +316,11 @@ func newServer(ctx context.Context, c Config, rotationStrategy rotationStrategy)
 	handleWithCORS("/userinfo", s.handleUserInfo)
 	handleFunc("/auth", s.handleAuthorization)
 	handleFunc("/auth/{connector}", s.handleConnectorLogin)
+	handleFunc("/device", s.handleDeviceExchange)
+	handleFunc("/device/auth/verify_code", s.verifyUserCode)
+	handleFunc("/device/code", s.handleDeviceCode)
+	handleFunc("/device/token", s.handleDeviceToken)
+	handleFunc(deviceCallbackURI, s.handleDeviceCallback)
 	r.HandleFunc(path.Join(issuerURL.Path, "/callback"), func(w http.ResponseWriter, r *http.Request) {
 		// Strip the X-Remote-* headers to prevent security issues on
 		// misconfigured authproxy connector setups.
@@ -448,8 +468,9 @@ func (s *Server) startGarbageCollection(ctx context.Context, frequency time.Dura
 			case <-time.After(frequency):
 				if r, err := s.storage.GarbageCollect(now()); err != nil {
 					s.logger.Errorf("garbage collection failed: %v", err)
-				} else if r.AuthRequests > 0 || r.AuthCodes > 0 {
-					s.logger.Infof("garbage collection run, delete auth requests=%d, auth codes=%d", r.AuthRequests, r.AuthCodes)
+				} else if !r.IsEmpty() {
+					s.logger.Infof("garbage collection run, delete auth requests=%d, auth codes=%d, device requests=%d, device tokens=%d",
+						r.AuthRequests, r.AuthCodes, r.DeviceRequests, r.DeviceTokens)
 				}
 			}
 		}
@@ -468,6 +489,7 @@ var ConnectorsConfig = map[string]func() ConnectorConfig{
 	"mockCallback":    func() ConnectorConfig { return new(mock.CallbackConfig) },
 	"mockPassword":    func() ConnectorConfig { return new(mock.PasswordConfig) },
 	"ldap":            func() ConnectorConfig { return new(ldap.Config) },
+	"gitea":           func() ConnectorConfig { return new(gitea.Config) },
 	"github":          func() ConnectorConfig { return new(github.Config) },
 	"gitlab":          func() ConnectorConfig { return new(gitlab.Config) },
 	"google":          func() ConnectorConfig { return new(google.Config) },
