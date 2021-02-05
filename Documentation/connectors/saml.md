@@ -126,7 +126,7 @@ staticClients:
   redirectURIs:
   - http://127.0.0.1:5555/callback
   samlInitiated:
-    redirecURI: http://127.0.0.1:5555/callback
+    redirectURI: http://127.0.0.1:5555/callback
     scopes: ["openid", "profile", "email"]
 ```
 
@@ -139,7 +139,7 @@ client := &api.Client{
     Secret:        "ZXhhbXBsZS1hcHAtc2VjcmV0",
     RedirectUris:  []string{"http://127.0.0.1:5555/callback"},
     SamlInitiated: &api.SamlInitiatedConfig{
-        RedirectURI: "http://127.0.0.1:5555/callback",
+        RedirectUri: "http://127.0.0.1:5555/callback",
         Scopes:      []string{"openid", "profile", "email"}
     },
 }
