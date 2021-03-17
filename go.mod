@@ -9,6 +9,7 @@ require (
 	github.com/dexidp/dex/api/v2 v2.0.0
 	github.com/felixge/httpsnoop v1.0.1
 	github.com/ghodss/yaml v1.0.0
+	github.com/go-ldap/ldap/v3 v3.2.4 // indirect
 	github.com/go-sql-driver/mysql v1.5.0
 	github.com/gogo/protobuf v1.3.1 // indirect
 	github.com/golang/protobuf v1.3.2
@@ -28,7 +29,7 @@ require (
 	github.com/sirupsen/logrus v1.8.1
 	github.com/spf13/cobra v1.1.3
 	github.com/stretchr/testify v1.7.0
-	go.etcd.io/etcd v0.0.0-20191023171146-3cf2f69b5738
+	go.etcd.io/etcd v0.5.0-alpha.5.0.20210226220824-aa7126864d82
 	golang.org/x/crypto v0.0.0-20201221181555-eec23a3978ad
 	golang.org/x/net v0.0.0-20201224014010-6772e930b67b
 	golang.org/x/oauth2 v0.0.0-20200107190931-bf48bf16ab8d
