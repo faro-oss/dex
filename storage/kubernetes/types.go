@@ -197,6 +197,14 @@ type Client struct {
 
 	Name    string `json:"name,omitempty"`
 	LogoURL string `json:"logoURL,omitempty"`
+
+	SAMLInitiated SAMLInitiatedConfig `json:"samlInitiated,omitempty"`
+}
+
+// SAMLInitiatedConfig is mirrored from storage.SAMLInitiatedConfig
+type SAMLInitiatedConfig struct {
+	RedirectURI string   `json:"redirectURI"`
+	Scopes      []string `json:"scopes,omitempty"`
 }
 
 // ClientList is a list of Clients.
@@ -223,6 +231,10 @@ func (cli *client) fromStorageClient(c storage.Client) Client {
 		Public:       c.Public,
 		Name:         c.Name,
 		LogoURL:      c.LogoURL,
+		SAMLInitiated: SAMLInitiatedConfig{
+			RedirectURI: c.SAMLInitiated.RedirectURI,
+			Scopes:      c.SAMLInitiated.Scopes,
+		},
 	}
 }
 
@@ -235,6 +247,10 @@ func toStorageClient(c Client) storage.Client {
 		Public:       c.Public,
 		Name:         c.Name,
 		LogoURL:      c.LogoURL,
+		SAMLInitiated: storage.SAMLInitiatedConfig{
+			RedirectURI: c.SAMLInitiated.RedirectURI,
+			Scopes:      c.SAMLInitiated.Scopes,
+		},
 	}
 }
 
